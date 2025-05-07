@@ -47,7 +47,7 @@ from pydantic import AnyUrl
 
 import mcp.types as types
 from mcp.server.models import InitializationOptions
-from mcp.shared.message import SessionMessage
+from mcp.shared.message import ServerMessageMetadata, SessionMessage
 from mcp.shared.session import (
     BaseSession,
     RequestResponder,
@@ -126,6 +126,25 @@ class ServerSession(
 
         if capability.sampling is not None:
             if client_caps.sampling is None:
+                return False
+
+        if capability.userInteraction is not None:
+            if client_caps.userInteraction is None:
+                return False
+            # Check specific interaction types if specified
+            if capability.userInteraction.types and (
+                not client_caps.userInteraction.types
+                or not all(
+                    t in client_caps.userInteraction.types
+                    for t in capability.userInteraction.types
+                )
+            ):
+                return False
+            # Check progress support if required
+            if (
+                capability.userInteraction.progress
+                and not client_caps.userInteraction.progress
+            ):
                 return False
 
         if capability.experimental is not None:
@@ -260,6 +279,111 @@ class ServerSession(
                 )
             ),
             types.ListRootsResult,
+        )
+
+    async def create_user_interaction(
+        self,
+        interaction_id: str,
+        interaction_type: str,
+        interaction_data: dict[str, Any],
+        progress_available: bool = False,
+        related_request_id: types.RequestId | None = None,
+    ) -> types.CreateUserInteractionResult:
+        """Send an interaction/create request to the client.
+
+        Args:
+            interaction_id: A unique ID for this interaction
+            interaction_type: The type of interaction (e.g. "ua" or "prompt")
+            interaction_data: The interaction object data based on the type
+            progress_available: Whether progress tracking is available
+            related_request_id: Optional ID of a related request
+
+        Returns:
+            The client's response
+
+        Raises:
+            ValueError: If the client doesn't support the interaction type
+        """
+        # Verify client capability
+        client_capabilities = (
+            self._client_params.capabilities if self._client_params else None
+        )
+
+        if (
+            not client_capabilities
+            or not client_capabilities.userInteraction
+            or (
+                client_capabilities.userInteraction.types
+                and interaction_type not in client_capabilities.userInteraction.types
+            )
+        ):
+            raise ValueError(
+                f"Client does not support {interaction_type} interaction type"
+            )
+
+        return await self.send_request(
+            types.ServerRequest(
+                types.CreateUserInteractionRequest(
+                    method="interaction/create",
+                    params=types.CreateUserInteractionRequestParams(
+                        id=interaction_id,
+                        type=interaction_type,
+                        interaction=interaction_data,
+                        progressAvailable=progress_available,
+                    ),
+                )
+            ),
+            types.CreateUserInteractionResult,
+            metadata=ServerMessageMetadata(related_request_id=related_request_id),
+        )
+
+    def require_user_interaction(
+        self,
+        interaction_id: str,
+        interaction_type: str,
+        interaction_data: dict[str, Any],
+    ) -> types.ErrorData:
+        """Creates an error response indicating user interaction is required.
+
+        This can be used when interaction is needed as a pre-condition for a request
+        (e.g., step-up authorization).
+
+        Args:
+            interaction_id: A unique ID for this interaction
+            interaction_type: The type of interaction (e.g. "ua" or "prompt")
+            interaction_data: The interaction object data based on the type
+
+        Returns:
+            An ErrorData object that can be returned as a response to a client request
+
+        Raises:
+            ValueError: If the client doesn't support the interaction type
+        """
+        # Verify client capability
+        client_capabilities = (
+            self._client_params.capabilities if self._client_params else None
+        )
+
+        if (
+            not client_capabilities
+            or not client_capabilities.userInteraction
+            or (
+                client_capabilities.userInteraction.types
+                and interaction_type not in client_capabilities.userInteraction.types
+            )
+        ):
+            raise ValueError(
+                f"Client does not support {interaction_type} interaction type"
+            )
+
+        return types.ErrorData(
+            code=types.INTERACTION_REQUIRED,
+            message="interaction_required",
+            data={
+                "id": interaction_id,
+                "type": interaction_type,
+                **interaction_data,
+            },
         )
 
     async def send_ping(self) -> types.EmptyResult:

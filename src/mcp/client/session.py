@@ -22,6 +22,14 @@ class SamplingFnT(Protocol):
     ) -> types.CreateMessageResult | types.ErrorData: ...
 
 
+class UserInteractionFnT(Protocol):
+    async def __call__(
+        self,
+        context: RequestContext["ClientSession", Any],
+        params: types.CreateUserInteractionRequestParams,
+    ) -> types.CreateUserInteractionResult | types.ErrorData: ...
+
+
 class ListRootsFnT(Protocol):
     async def __call__(
         self, context: RequestContext["ClientSession", Any]
@@ -62,6 +70,16 @@ async def _default_sampling_callback(
     )
 
 
+async def _default_user_interaction_callback(
+    context: RequestContext["ClientSession", Any],
+    params: types.CreateUserInteractionRequestParams,
+) -> types.CreateUserInteractionResult | types.ErrorData:
+    return types.ErrorData(
+        code=types.INVALID_REQUEST,
+        message="User interaction not supported",
+    )
+
+
 async def _default_list_roots_callback(
     context: RequestContext["ClientSession", Any],
 ) -> types.ListRootsResult | types.ErrorData:
@@ -97,6 +115,7 @@ class ClientSession(
         write_stream: MemoryObjectSendStream[SessionMessage],
         read_timeout_seconds: timedelta | None = None,
         sampling_callback: SamplingFnT | None = None,
+        user_interaction_callback: UserInteractionFnT | None = None,
         list_roots_callback: ListRootsFnT | None = None,
         logging_callback: LoggingFnT | None = None,
         message_handler: MessageHandlerFnT | None = None,
@@ -111,12 +130,19 @@ class ClientSession(
         )
         self._client_info = client_info or DEFAULT_CLIENT_INFO
         self._sampling_callback = sampling_callback or _default_sampling_callback
+        self._user_interaction_callback = (
+            user_interaction_callback or _default_user_interaction_callback
+        )
         self._list_roots_callback = list_roots_callback or _default_list_roots_callback
         self._logging_callback = logging_callback or _default_logging_callback
         self._message_handler = message_handler or _default_message_handler
 
     async def initialize(self) -> types.InitializeResult:
         sampling = types.SamplingCapability()
+        user_interaction = types.UserInteractionCapability(
+            types=["ua", "prompt"],
+            progress=True,
+        )
         roots = types.RootsCapability(
             # TODO: Should this be based on whether we
             # _will_ send notifications, or only whether
@@ -132,6 +158,7 @@ class ClientSession(
                         protocolVersion=types.LATEST_PROTOCOL_VERSION,
                         capabilities=types.ClientCapabilities(
                             sampling=sampling,
+                            userInteraction=user_interaction,
                             experimental=None,
                             roots=roots,
                         ),
@@ -298,6 +325,36 @@ class ClientSession(
             types.GetPromptResult,
         )
 
+    async def notify_user_interaction_progress(
+        self, interaction_id: str, progress_token: str | int
+    ) -> types.UserInteractionProgressResult:
+        """Send a interaction/notify request to track progress for a user interaction.
+
+        Args:
+            interaction_id: The ID of the interaction to track progress for
+            progress_token: A token to identify this progress tracking request
+
+        Returns:
+            An empty result when the interaction is complete
+
+        Note:
+            The server may send progress notifications with the provided token
+            until the interaction is complete. The server will respond to this
+            request only when the interaction is complete.
+        """
+        params = types.NotifyUserInteractionProgressRequestParams(id=interaction_id)
+        params.meta = types.RequestParams.Meta(progressToken=progress_token)
+
+        return await self.send_request(
+            types.ClientRequest(
+                types.NotifyUserInteractionProgressRequest(
+                    method="interaction/notify",
+                    params=params,
+                )
+            ),
+            types.UserInteractionProgressResult,
+        )
+
     async def complete(
         self,
         ref: types.ResourceReference | types.PromptReference,
@@ -352,6 +409,12 @@ class ClientSession(
             case types.CreateMessageRequest(params=params):
                 with responder:
                     response = await self._sampling_callback(ctx, params)
+                    client_response = ClientResponse.validate_python(response)
+                    await responder.respond(client_response)
+
+            case types.CreateUserInteractionRequest(params=params):
+                with responder:
+                    response = await self._user_interaction_callback(ctx, params)
                     client_response = ClientResponse.validate_python(response)
                     await responder.respond(client_response)
 

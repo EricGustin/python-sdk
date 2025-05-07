@@ -146,6 +146,7 @@ INVALID_REQUEST = -32600
 METHOD_NOT_FOUND = -32601
 INVALID_PARAMS = -32602
 INTERNAL_ERROR = -32603
+INTERACTION_REQUIRED = -32003
 
 
 class ErrorData(BaseModel):
@@ -210,6 +211,18 @@ class SamplingCapability(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class UserInteractionCapability(BaseModel):
+    """Capability for user interaction operations."""
+
+    types: list[str] | None = None
+    """List of supported interaction types (e.g. ["ua", "prompt"])."""
+
+    progress: bool | None = None
+    """Whether the client supports progress tracking for interactions."""
+
+    model_config = ConfigDict(extra="allow")
+
+
 class ClientCapabilities(BaseModel):
     """Capabilities a client may support."""
 
@@ -217,6 +230,8 @@ class ClientCapabilities(BaseModel):
     """Experimental, non-standard capabilities that the client supports."""
     sampling: SamplingCapability | None = None
     """Present if the client supports sampling from an LLM."""
+    userInteraction: UserInteractionCapability | None = None
+    """Present if the client supports user interaction."""
     roots: RootsCapability | None = None
     """Present if the client supports listing roots."""
     model_config = ConfigDict(extra="allow")
@@ -736,7 +751,7 @@ class ToolAnnotations(BaseModel):
 
     idempotentHint: bool | None = None
     """
-    If true, calling the tool repeatedly with the same arguments 
+    If true, calling the tool repeatedly with the same arguments
     will have no additional effect on the its environment.
     (This property is meaningful only when `readOnlyHint == false`)
     Default: false
@@ -1110,6 +1125,70 @@ class CancelledNotification(
     params: CancelledNotificationParams
 
 
+class CreateUserInteractionRequestParams(RequestParams):
+    """Parameters for user interaction requests."""
+
+    id: str
+    """The ID of the interaction."""
+
+    type: str
+    """The type of interaction (e.g. "ua" or "prompt")."""
+
+    interaction: dict[str, Any]
+    """The interaction object. Schema depends on the interaction type."""
+
+    progressAvailable: bool | None = None
+    """Whether progress is available for this interaction."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class CreateUserInteractionRequest(
+    Request[CreateUserInteractionRequestParams, Literal["interaction/create"]]
+):
+    """A request from the server to create a user interaction."""
+
+    method: Literal["interaction/create"]
+    params: CreateUserInteractionRequestParams
+
+
+class CreateUserInteractionResult(Result):
+    """The client's response to a user interaction/create request from the server."""
+
+    content: dict[str, Any] | None = None
+    """The user's response to a prompt interaction."""
+
+
+class NotifyUserInteractionProgressRequestParams(RequestParams):
+    """Parameters for requesting progress notifications for a user interaction."""
+
+    id: str
+    """The ID of the interaction to track progress for."""
+
+    model_config = ConfigDict(extra="allow")
+
+
+class NotifyUserInteractionProgressRequest(
+    Request[NotifyUserInteractionProgressRequestParams, Literal["interaction/notify"]]
+):
+    """
+    A request from the client to the server, requesting
+    progress notifications for a user interaction.
+    """
+
+    method: Literal["interaction/notify"]
+    params: NotifyUserInteractionProgressRequestParams
+
+
+class UserInteractionProgressResult(Result):
+    """
+    A result from the server to the client, containing
+    the progress of a user interaction.
+    """
+
+    pass
+
+
 class ClientRequest(
     RootModel[
         PingRequest
@@ -1125,6 +1204,7 @@ class ClientRequest(
         | UnsubscribeRequest
         | CallToolRequest
         | ListToolsRequest
+        | NotifyUserInteractionProgressRequest
     ]
 ):
     pass
@@ -1141,11 +1221,19 @@ class ClientNotification(
     pass
 
 
-class ClientResult(RootModel[EmptyResult | CreateMessageResult | ListRootsResult]):
+class ClientResult(
+    RootModel[
+        EmptyResult | CreateMessageResult | ListRootsResult | CreateUserInteractionResult
+    ]
+):
     pass
 
 
-class ServerRequest(RootModel[PingRequest | CreateMessageRequest | ListRootsRequest]):
+class ServerRequest(
+    RootModel[
+        PingRequest | CreateMessageRequest | ListRootsRequest | CreateUserInteractionRequest
+    ]
+):
     pass
 
 
@@ -1175,6 +1263,7 @@ class ServerResult(
         | ReadResourceResult
         | CallToolResult
         | ListToolsResult
+        | UserInteractionProgressResult
     ]
 ):
     pass

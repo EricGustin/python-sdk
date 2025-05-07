@@ -4,13 +4,18 @@ from __future__ import annotations as _annotations
 
 import inspect
 import re
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from contextlib import (
     AbstractAsyncContextManager,
     asynccontextmanager,
 )
 from itertools import chain
-from typing import Any, Generic, Literal
+from typing import (
+    Any,
+    Generic,
+    Literal,
+)
 
 import anyio
 import pydantic_core
@@ -55,6 +60,7 @@ from mcp.types import (
     ImageContent,
     TextContent,
     ToolAnnotations,
+    ErrorData,
 )
 from mcp.types import Prompt as MCPPrompt
 from mcp.types import PromptArgument as MCPPromptArgument
@@ -822,12 +828,165 @@ class Context(BaseModel, Generic[ServerSessionT, LifespanContextT]):
         ), "Context is not available outside of a request"
         return await self._fastmcp.read_resource(uri)
 
+    async def prompt_user(
+        self,
+        message: str,
+        schema: dict[str, Any],
+        interaction_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Request and obtain information from the user via a prompt interaction.
+
+        This is suitable for non-sensitive information.
+
+        Args:
+            message: The message to present to the user
+            schema: JSON Schema defining the expected response structure
+            interaction_id: Optional custom ID for the interaction
+                (one will be generated if not provided)
+
+        Returns:
+            The user's response as a dict matching the schema structure
+
+        Raises:
+            ValueError: If prompt interaction is not supported by the client or fails
+        """
+        # Verify client capability
+        client_capabilities = (
+            self.request_context.session.client_params.capabilities
+            if self.request_context.session.client_params
+            else None
+        )
+
+        if (
+            not client_capabilities
+            or not client_capabilities.userInteraction
+            or (
+                client_capabilities.userInteraction.types
+                and "prompt" not in client_capabilities.userInteraction.types
+            )
+        ):
+            raise ValueError("Client does not support prompt interaction type")
+
+        interaction_id = interaction_id or str(uuid.uuid4())
+        interaction_data = {
+            "message": {"type": "text", "text": message},
+            "schema": schema,
+        }
+
+        # Track progress if supported
+        progress_available = bool(
+            client_capabilities.userInteraction
+            and client_capabilities.userInteraction.progress
+        )
+
+        result = await self.request_context.session.create_user_interaction(
+            interaction_id=interaction_id,
+            interaction_type="prompt",
+            interaction_data=interaction_data,
+            progress_available=progress_available,
+            related_request_id=self.request_id,
+        )
+
+        return result.content or {}
+
+    async def request_user_agent_interaction(
+        self,
+        url: str,
+        message: str | None = None,
+        interaction_id: str | None = None,
+    ) -> None:
+        """Request the user to interact with a URL via a user agent (browser).
+
+        This method is suitable for sensitive interactions that should happen directly
+        between the user and a third-party service, such as authentication flows.
+
+        Args:
+            url: The URL the user should navigate to
+            message: Optional explanatory message about the interaction to show the user
+            interaction_id: Optional custom ID for the interaction
+                (one will be generated if not provided)
+
+        Raises:
+            ValueError: If user agent interaction is not supported by the client
+        """
+        # Verify client capability
+        client_capabilities = (
+            self.request_context.session.client_params.capabilities
+            if self.request_context.session.client_params
+            else None
+        )
+
+        if (
+            not client_capabilities
+            or not client_capabilities.userInteraction
+            or (
+                client_capabilities.userInteraction.types
+                and "ua" not in client_capabilities.userInteraction.types
+            )
+        ):
+            raise ValueError("Client does not support user agent interaction type")
+
+        interaction_id = interaction_id or str(uuid.uuid4())
+        interaction_data = {"url": url}
+
+        if message:
+            interaction_data["message"] = {"type": "text", "text": message}
+
+        # Track progress if supported
+        progress_available = bool(
+            client_capabilities.userInteraction
+            and client_capabilities.userInteraction.progress
+        )
+
+        await self.request_context.session.create_user_interaction(
+            interaction_id=interaction_id,
+            interaction_type="ua",
+            interaction_data=interaction_data,
+            progress_available=progress_available,
+            related_request_id=self.request_id,
+        )
+
+    def require_user_agent_interaction(
+        self,
+        url: str,
+        message: str | None = None,
+        interaction_id: str | None = None,
+    ) -> ErrorData:
+        """Creates an error response indicating user agent interaction is required.
+
+        This can be used when a user agent interaction is required as a pre-condition for a request
+        (e.g., step-up authorization that needs to happen in a browser).
+
+        Args:
+            url: The URL the user should navigate to in their browser
+            message: Optional explanatory message to show the user
+            interaction_id: Optional unique ID for this interaction
+                         (one will be generated if not provided)
+
+        Returns:
+            An ErrorData object that can be returned as a response to a client request
+
+        Raises:
+            ValueError: If the client doesn't support the user agent interaction type
+        """
+        interaction_id = interaction_id or str(uuid.uuid4())
+        interaction_data = {"url": url}
+        if message:
+            interaction_data["message"] = {"type": "text", "text": message}
+
+        return self.request_context.session.require_user_interaction(
+            interaction_id=interaction_id,
+            interaction_type="ua",
+            interaction_data=interaction_data,
+        )
+
     async def log(
         self,
         level: Literal["debug", "info", "warning", "error"],
         message: str,
         *,
         logger_name: str | None = None,
+        **extra: Any,
     ) -> None:
         """Send a log message to the client.
 
