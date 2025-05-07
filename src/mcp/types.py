@@ -1223,7 +1223,10 @@ class ClientNotification(
 
 class ClientResult(
     RootModel[
-        EmptyResult | CreateMessageResult | ListRootsResult | CreateUserInteractionResult
+        EmptyResult
+        | CreateMessageResult
+        | ListRootsResult
+        | CreateUserInteractionResult
     ]
 ):
     pass
@@ -1231,7 +1234,10 @@ class ClientResult(
 
 class ServerRequest(
     RootModel[
-        PingRequest | CreateMessageRequest | ListRootsRequest | CreateUserInteractionRequest
+        PingRequest
+        | CreateMessageRequest
+        | ListRootsRequest
+        | CreateUserInteractionRequest
     ]
 ):
     pass

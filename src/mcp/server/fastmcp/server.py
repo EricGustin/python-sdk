@@ -56,11 +56,11 @@ from mcp.shared.context import LifespanContextT, RequestContext
 from mcp.types import (
     AnyFunction,
     EmbeddedResource,
+    ErrorData,
     GetPromptResult,
     ImageContent,
     TextContent,
     ToolAnnotations,
-    ErrorData,
 )
 from mcp.types import Prompt as MCPPrompt
 from mcp.types import PromptArgument as MCPPromptArgument
@@ -927,7 +927,7 @@ class Context(BaseModel, Generic[ServerSessionT, LifespanContextT]):
             raise ValueError("Client does not support user agent interaction type")
 
         interaction_id = interaction_id or str(uuid.uuid4())
-        interaction_data = {"url": url}
+        interaction_data: dict[str, str | dict[str, str]] = {"url": url}
 
         if message:
             interaction_data["message"] = {"type": "text", "text": message}
@@ -954,8 +954,8 @@ class Context(BaseModel, Generic[ServerSessionT, LifespanContextT]):
     ) -> ErrorData:
         """Creates an error response indicating user agent interaction is required.
 
-        This can be used when a user agent interaction is required as a pre-condition for a request
-        (e.g., step-up authorization that needs to happen in a browser).
+        This can be used when a user agent interaction is required as a pre-condition
+        for a request (e.g., step-up authorization that needs to happen in a browser).
 
         Args:
             url: The URL the user should navigate to in their browser
@@ -970,7 +970,7 @@ class Context(BaseModel, Generic[ServerSessionT, LifespanContextT]):
             ValueError: If the client doesn't support the user agent interaction type
         """
         interaction_id = interaction_id or str(uuid.uuid4())
-        interaction_data = {"url": url}
+        interaction_data: dict[str, str | dict[str, str]] = {"url": url}
         if message:
             interaction_data["message"] = {"type": "text", "text": message}
 
@@ -986,7 +986,6 @@ class Context(BaseModel, Generic[ServerSessionT, LifespanContextT]):
         message: str,
         *,
         logger_name: str | None = None,
-        **extra: Any,
     ) -> None:
         """Send a log message to the client.
 

@@ -6,7 +6,7 @@ import pytest
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.shared.memory import create_connected_server_and_client_session
-from mcp.types import TextContent, CreateUserInteractionResult
+from mcp.types import CreateUserInteractionResult, TextContent
 
 
 @pytest.mark.anyio
