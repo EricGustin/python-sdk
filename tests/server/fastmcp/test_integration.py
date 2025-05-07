@@ -15,8 +15,8 @@ import uvicorn
 
 from mcp.client.session import ClientSession
 from mcp.client.sse import sse_client
-from mcp.server.fastmcp import FastMCP
-from mcp.types import InitializeResult, TextContent
+from mcp.server.fastmcp import Context, FastMCP
+from mcp.types import CreateUserInteractionResult, InitializeResult, TextContent
 
 
 @pytest.fixture
@@ -44,6 +44,23 @@ def make_fastmcp_app():
     @mcp.tool(description="A simple echo tool")
     def echo(message: str) -> str:
         return f"Echo: {message}"
+
+    @mcp.tool(description="A tool that uses user interaction")
+    async def ask_user(prompt: str, ctx: Context) -> str:
+        schema = {
+            "type": "object",
+            "properties": {
+                "answer": {"type": "string"},
+            },
+            "required": ["answer"],
+        }
+
+        response = await ctx.prompt_user(
+            message=f"Tool wants to ask: {prompt}",
+            schema=schema,
+            interaction_id="test-interaction-id",
+        )
+        return f"User answered: {response['answer']}"
 
     # Create the SSE app
     app: Starlette = mcp.sse_app()
@@ -110,3 +127,41 @@ async def test_fastmcp_without_auth(server: None, server_url: str) -> None:
             assert len(tool_result.content) == 1
             assert isinstance(tool_result.content[0], TextContent)
             assert tool_result.content[0].text == "Echo: hello"
+
+
+@pytest.mark.anyio
+async def test_user_interaction(server: None, server_url: str) -> None:
+    """Test the user interaction feature."""
+
+    async def user_interaction_callback(context, params):
+        """Custom handler for user interaction requests."""
+        # Verify the interaction parameters
+        if (
+            params.type == "prompt"
+            and params.id == "test-interaction-id"
+            and params.interaction.get("message", {}).get("text")
+            == "Tool wants to ask: What is your name?"
+        ):
+            return CreateUserInteractionResult(content={"answer": "Test User"})
+        else:
+            raise ValueError(f"Unexpected interaction: {params}")
+
+    # Connect to the server with our custom user interaction handler
+    async with sse_client(server_url + "/sse") as streams:
+        async with ClientSession(
+            *streams, user_interaction_callback=user_interaction_callback
+        ) as session:
+            # Test initialization
+            result = await session.initialize()
+            assert isinstance(result, InitializeResult)
+            assert result.serverInfo.name == "NoAuthServer"
+
+            # Call the tool that uses user interaction
+            tool_name = "ask_user"
+            arguments = {"prompt": "What is your name?"}
+            tool_result = await session.call_tool(tool_name, arguments)
+
+            # Verify the result
+            assert len(tool_result.content) == 1
+            assert isinstance(tool_result.content[0], TextContent)
+            assert tool_result.content[0].text == "User answered: Test User"
